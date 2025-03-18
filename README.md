@@ -20,7 +20,7 @@ This project was inspired by the [YouTube video by Andrej Karpathy](https://www.
 
 ## Future Work:
 
-- Research Paper Implementation: I will be implementing a more complex and cutting-edge research paper related to transformer models or generative AI to deepen the project’s scope. This will include adaptations of the core model and algorithm improvements based on state-of-the-art methods.
+- Research Paper Implementation: I am implementing a more complex and cutting-edge research paper related to transformer models or generative AI to deepen the project’s scope. This will include adaptations of the core model and algorithm improvements based on state-of-the-art methods.
 
 - Fine-tuning for Specific Tasks: Applying the model to specific text generation tasks and fine-tuning it on specialized datasets.
 
