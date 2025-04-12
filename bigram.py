@@ -6,6 +6,17 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.nn import functional as F
 
+from GLU import TransformerBlock
+
+from SparseAttention import SparseAttention
+
+from Linformer import LinformerSelfAttention  # Import Linformer (if using Linformer)
+from Performer import PerformerSelfAttention  # Import Performer (if using Performer)
+
+# Realted to tensorboard for logging
+from torch.utils.tensorboard import SummaryWriter
+
+
 # python environment = nano_gpt_env
 
 # Heyperparameters after scaling 
@@ -25,18 +36,29 @@ from torch.nn import functional as F
 batch_size = 32 # how many independent sequences will we process in parallel?
 block_size = 8 # what is the maximum context length for predictions?
 max_iters = 50
-eval_interval = 500
+eval_interval = 5
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 eval_iters = 200
 learning_rate = 1e-3
-n_embd = 36
+# n_embd = 36
+# n_head = 6
+n_embd = 72
 n_head = 6
+
 n_layer = 6
-dropout = 0.2
+dropout = 0.1
+
 
 torch.manual_seed(1337)
 
 # print("imported libraries")
+
+
+# Hyperparameters for Applying different Attention Mechanisms
+use_glu = False  # Add this flag to choose whether to use GLU TransformerBlock
+use_sparseattention = False  # Set to False to disable Sparse Attention
+use_linformer = False  # Set to True if using Linformer
+use_performer = False  # Set to True if using Performer
 
 
 with open('input.txt', 'r') as file:
@@ -70,6 +92,26 @@ train_data = data[:n]
 val_data = data[n:]
 
 # data loading
+
+# Logging the performance of models
+
+from logger import ModelLogger
+
+# Initialize the logger
+logger = ModelLogger()
+
+# Log the hyperparameters
+hyperparameters = {
+    'batch_size': batch_size,
+    'block_size': block_size,
+    'learning_rate': learning_rate,
+    'n_embd': n_embd,
+    'n_head': n_head,
+    'n_layer': n_layer,
+    'dropout': dropout
+}
+logger.log_hyperparameters(**hyperparameters)
+
 
 def get_batch(split):
     data = train_data if split == 'train' else val_data
@@ -138,8 +180,6 @@ class MultiHeadAttention(nn.Module):
         out = self.dropout(self.proj(out))
 
         return out
-    
-
 class FeedForward(nn.Module):
     """ A simple layer followed by non-linearity """
 
@@ -159,10 +199,15 @@ class FeedForward(nn.Module):
 class Block(nn.Module):
     """ Transformer block: Communication followed bycomputation """
 
-    def __init__(self, n_embd, n_head):
+    def __init__(self, n_embd, n_head, use_glu=False):
         super().__init__()
-        head_size = n_embd//n_head
-        self.sa = MultiHeadAttention(n_head, head_size)
+
+        if use_glu:
+            self.sa = TransformerBlock(n_embd, n_head, glu_dim=n_embd)
+        else:
+            head_size = n_embd // n_head
+            self.sa = MultiHeadAttention(n_head, head_size)
+
         self.ffwd = FeedForward(n_embd)
         self.ln1 = nn.LayerNorm(n_embd)
         self.ln2 = nn.LayerNorm(n_embd)
@@ -177,36 +222,38 @@ class Block(nn.Module):
 
 class BigramLanguageModel(nn.Module):
 
-
-    def __init__(self):
+    def __init__(self, use_glu=False, use_sparseattention=False, use_linformer=False, use_performer=False):
         super().__init__()
         self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
         self.position_embedding_table = nn.Embedding(block_size, n_embd)
-        # self.sa_heads = MultiHeadAttention(4, n_embd//4) # i.e. 4 heads of 8-dimensional slef attention
-        # self.ffwd = FeedForward(n_embd)
-        # self.blocks = nn.Sequential(
-        #     Block(n_embd, n_head=4),
-        #     Block(n_embd, n_head=4),
-        #     Block(n_embd, n_head=4),
-        #     nn.LayerNorm(n_embd),
-        # )
-        self.blocks = nn.Sequential( *[Block(n_embd, n_head= n_head) for _ in range (n_layer)] )
-        self.ln_f = nn.LayerNorm(n_embd) # Final layer norm
+        
+        # Define attention type
+        if use_sparseattention:
+            self.attention = SparseAttention(embed_size=n_embd, num_heads=n_head, dropout=dropout, seq_length=block_size)
+        elif use_linformer:
+            self.attention = LinformerSelfAttention(n_embd, n_head, seq_len=block_size)
+        elif use_performer:
+            self.attention = PerformerSelfAttention(n_embd, n_head)
+        else:
+            self.attention = MultiHeadAttention(num_heads=n_head, head_size=n_embd // n_head)
+
+        self.blocks = nn.Sequential(*[Block(n_embd, n_head, use_glu=use_glu) for _ in range(n_layer)])
+        self.ln_f = nn.LayerNorm(n_embd)  
         self.lm_head = nn.Linear(n_embd, vocab_size)
 
-
     def forward(self, idx, targets=None):
-        
         B, T = idx.shape
-        tok_emb = self.token_embedding_table(idx) # B, T, C
-        pos_emb = self.position_embedding_table(torch.arange(T, device=device)) # T, C
-        x = tok_emb + pos_emb # B, T, C
-        # x = self.sa_heads(x) # apply one head of self attention. (B, T, C)
-        # x = self.ffwd(x) # (B, T, C)
-        x = self.blocks(x) # (B, T, C)
-        x = self.ln_f(x) # (B, T, C)
-        logits = self.lm_head(x) # B, T, vocab_size
+        tok_emb = self.token_embedding_table(idx)  
+        pos_emb = self.position_embedding_table(torch.arange(T, device=device))  
+        x = tok_emb + pos_emb  
+        
+        x = self.blocks(x)  
 
+        if use_sparseattention or use_linformer or use_performer:
+            x = self.attention(x)  
+
+        x = self.ln_f(x)  
+        logits = self.lm_head(x)  
 
         if targets is None:
             loss = None
@@ -217,6 +264,7 @@ class BigramLanguageModel(nn.Module):
             loss = F.cross_entropy(logits, targets)
 
         return logits, loss
+
 
     def generate(self, idx, max_new_tokens):
       # idx is the (B, T) array of indices in the current context
@@ -239,7 +287,15 @@ class BigramLanguageModel(nn.Module):
 # Here starts the code for train.py in the github
 
 
-model = BigramLanguageModel()
+model = BigramLanguageModel(use_glu=use_glu, use_sparseattention=use_sparseattention, use_linformer=use_linformer, 
+                            use_performer=use_performer)
+
+# Move model to bfloat16 to reduce memory usage and improve training efficiency
+model.to(torch.bfloat16)
+
+
+# Initializing for recording the losses and gradients - Tendsorboard
+writer = SummaryWriter(log_dir="logs")
 
 # create a PyTorch optimizer
 optimizer = optim.AdamW(model.parameters(), lr=learning_rate)
@@ -249,13 +305,33 @@ for i in range(max_iters):
     if i % eval_interval == 0:
         losses = estimate_loss()
         print(f"step {i}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+        # Log the losses
+        logger.log_loss(losses['train'], losses['val'])
+
+                
+        # Log losses to TensorBoard
+        writer.add_scalars("Loss", {'train': losses['train'], 'val': losses['val']}, i)
+
 
     xb, yb = get_batch('train')
     logits, loss = model(xb, yb)
-    optimizer.zero_grad(set_to_none=True)
-    loss.backward()
-    optimizer.step()
+    
+    # Log gradients and weights
+    logger.log_gradients(model)
+    logger.log_weights(model)
 
+    optimizer.zero_grad(set_to_none=True)
+    loss.backward()  #  Backpropagation (calculating gradients)
+    optimizer.step() #  Updating the model's parameters using those gradients
+
+    # Log model weights and gradients TensorBoard
+    for name, param in model.named_parameters():
+        if param.requires_grad and param.grad is not None:
+            writer.add_histogram(f"weights/{name}", param, i)
+            writer.add_histogram(f"gradients/{name}", param.grad, i)
+
+# Close the logger at the end of training
+logger.close()
 
 # generate from the model
 context = torch.zeros((1, 1), dtype=torch.long, device=device)
