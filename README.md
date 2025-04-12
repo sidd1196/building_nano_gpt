@@ -12,6 +12,7 @@ The primary goal of this project is to build a minimal yet functional GPT model 
 - Tokenizer Implementation: Custom character encoding and decoding functions.
 - Training Loop: Optimized using AdamW with training and validation loss monitoring.
 - Text Generation: Text generation function to sample from the trained model.
+- Implementing SparseAttention.
 
 
 ## Inspiration
